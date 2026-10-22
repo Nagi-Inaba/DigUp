@@ -1,0 +1,57 @@
+name: Windows IME test build
+
+on:
+  push:
+    branches: [test/ime-windows-build]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  windows:
+    runs-on: windows-2025
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            shell/src-tauri/target
+          key: ime-windows-${{ runner.os }}-${{ hashFiles('shell/src-tauri/Cargo.lock') }}
+      - uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756
+      - name: Input regression tests
+        run: node --test shell/tests/composition.test.cjs
+      - name: Build the patched shell
+        working-directory: shell/src-tauri
+        run: cargo build --release --locked
+      - name: Prepare the portable test build
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $setup = Join-Path $env:RUNNER_TEMP 'official-setup.exe'
+          Invoke-WebRequest 'https://github.com/ARahim3/DigUp/releases/download/v0.7.0-beta.2/DigUp_0.7.0-beta.2_x64-setup.exe' -OutFile $setup
+          $expected = '8c5804558a4142ccc380e00c2b0498a7fef19f60c4c59e23450f73de79c025a6'
+          if ((Get-FileHash $setup -Algorithm SHA256).Hash.ToLowerInvariant() -ne $expected) { throw 'Official package checksum mismatch' }
+          $unpacked = Join-Path $env:RUNNER_TEMP 'official-unpacked'
+          & 7z x $setup "-o$unpacked" -y
+          if ($LASTEXITCODE -ne 0) { throw 'Could not extract the official helper' }
+          if (!(Test-Path "$unpacked/helper/digup.exe")) { throw 'Official helper is missing' }
+          $out = Join-Path $env:RUNNER_TEMP 'DigUp-IME-test-windows-x64'
+          New-Item -ItemType Directory -Path $out -Force | Out-Null
+          Copy-Item 'shell/src-tauri/target/release/digup-shell.exe' "$out/DigUp-IME-test.exe"
+          Copy-Item "$unpacked/helper" "$out/helper" -Recurse
+          Copy-Item "$unpacked/THIRD-PARTY-NOTICES.txt" $out
+          Copy-Item 'scripts/ime-test/Launch-IME-Test.cmd','scripts/ime-test/README-ja.md' $out
+          New-Item -ItemType Directory -Path "$out/TestFiles" | Out-Null
+          Set-Content -Encoding utf8 "$out/TestFiles/東京の旅行.txt" '東京への旅行の予定です。浅草を散歩して、おいしい料理を食べます。'
+          Set-Content -Encoding utf8 "$out/TestFiles/会議メモ.txt" '次の会議は金曜日です。会議の資料を準備します。'
+          Set-Content -Encoding utf8 "$out/BUILD-INFO.txt" "Shell source: $env:GITHUB_SHA`nHelper: ARahim3/DigUp v0.7.0-beta.2`nIME fix: b036b07"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: DigUp-IME-test-windows-x64
+          path: ${{ runner.temp }}/DigUp-IME-test-windows-x64/
+          retention-days: 7
+          if-no-files-found: error
